@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Drawable
+import android.os.Process
 import android.os.UserHandle
 import android.view.View
 import android.view.accessibility.AccessibilityNodeInfo
@@ -189,7 +190,11 @@ class RecentsAppBubble(context: Context) : ModPack(context) {
             .union(target::class.java.methods.toList())
             .firstOrNull { method ->
                 method.name == "showAppBubble" &&
-                        buildShowAppBubbleArgs(method.parameterTypes, Intent(), UserHandle.of(0)) != null
+                        buildShowAppBubbleArgs(
+                            method.parameterTypes,
+                            Intent(),
+                            userHandleFor(0)
+                        ) != null
             }
     }
 
@@ -308,7 +313,29 @@ class RecentsAppBubble(context: Context) : ModPack(context) {
             ?: taskContainer.callMethodSilently("getTaskView")?.callMethodSilently("getFirstTask")
         val key = task?.getFieldSilently("key")
         val userId = key?.getFieldSilently("userId") as? Int ?: 0
-        return UserHandle.of(userId)
+        return userHandleFor(userId)
+    }
+
+    private fun userHandleFor(userId: Int): UserHandle {
+        val ofMethod = UserHandle::class.java.methods.firstOrNull { method ->
+            method.name == "of" &&
+                    method.parameterTypes.contentEquals(arrayOf(Int::class.javaPrimitiveType))
+        }
+
+        if (ofMethod != null) {
+            return ofMethod.invoke(null, userId) as UserHandle
+        }
+
+        val constructor = UserHandle::class.java.declaredConstructors.firstOrNull { declared ->
+            declared.parameterTypes.contentEquals(arrayOf(Int::class.javaPrimitiveType))
+        }
+
+        if (constructor != null) {
+            constructor.isAccessible = true
+            return constructor.newInstance(userId) as UserHandle
+        }
+
+        return Process.myUserHandle()
     }
 
     private fun resolveTaskIntent(taskContainer: Any): Intent? {
