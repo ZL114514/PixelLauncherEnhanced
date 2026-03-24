@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.drawable.Drawable
 import android.os.Process
 import android.os.UserHandle
 import android.view.View
@@ -50,7 +51,10 @@ class RecentsAppBubble(context: Context) : ModPack(context) {
                 val iconView = param.args[0] as View
                 val labelView = param.args[1] as TextView
 
-                iconView.background = null
+                val bubbleIcon = getBubbleIcon(iconView.context)
+                if (bubbleIcon != null) {
+                    iconView.background = bubbleIcon
+                }
                 labelView.text = getBubbleLabel(iconView.context)
                 param.result = null
             }
@@ -61,7 +65,7 @@ class RecentsAppBubble(context: Context) : ModPack(context) {
                 if (!isBubbleShortcut(param.thisObject)) return@runBefore
 
                 val iconView = param.args[0] as ImageView
-                iconView.setImageDrawable(null)
+                iconView.setImageDrawable(getBubbleIcon(iconView.context))
                 iconView.contentDescription = getBubbleLabel(iconView.context)
                 param.result = null
             }
