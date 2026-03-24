@@ -21,6 +21,7 @@ import com.drdisagree.pixellauncherenhanced.xposed.mods.LauncherUtils
 import com.drdisagree.pixellauncherenhanced.xposed.mods.LockLayout
 import com.drdisagree.pixellauncherenhanced.xposed.mods.OpacityModifier
 import com.drdisagree.pixellauncherenhanced.xposed.mods.QuickLaunch
+import com.drdisagree.pixellauncherenhanced.xposed.mods.RecentsAppBubble
 import com.drdisagree.pixellauncherenhanced.xposed.mods.ShortcutBadge
 import com.drdisagree.pixellauncherenhanced.xposed.mods.SmartSpace
 import com.drdisagree.pixellauncherenhanced.xposed.mods.TaskbarHandle
@@ -43,6 +44,7 @@ object EntryList {
         GestureMod::class.java,
         HotseatMod::class.java,
         FreeformMod::class.java,
+        RecentsAppBubble::class.java,
         IconTextSize::class.java,
         SmartSpace::class.java,
         HideStatusbar::class.java,
