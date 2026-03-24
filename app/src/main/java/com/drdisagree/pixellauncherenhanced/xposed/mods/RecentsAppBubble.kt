@@ -363,32 +363,26 @@ class RecentsAppBubble(context: Context) : ModPack(context) {
     }
 
     @SuppressLint("DiscouragedApi")
-    private fun getBubbleIcon(context: Context): Drawable? {
-        val bubbleIconRes = context.resources.getIdentifier(
-            "ic_bubble_button",
-            "drawable",
+    private fun getBubbleLabel(context: Context): CharSequence {
+        val openAsBubbleRes = context.resources.getIdentifier(
+            "open_app_as_a_bubble",
+            "string",
             context.packageName
         )
-
-        return when {
-            bubbleIconRes != 0 -> context.getDrawable(bubbleIconRes)
-            else -> modRes.getDrawable(R.drawable.ic_open)
+        if (openAsBubbleRes != 0) {
+            return context.getString(openAsBubbleRes)
         }
-    }
 
-    @SuppressLint("DiscouragedApi")
-    private fun getBubbleLabel(context: Context): CharSequence {
-        val bubbleLabelRes = context.resources.getIdentifier(
+        val bubbleRes = context.resources.getIdentifier(
             "bubble",
             "string",
             context.packageName
         )
-
-        return if (bubbleLabelRes != 0) {
-            context.getString(bubbleLabelRes)
-        } else {
-            modRes.getString(R.string.recents_app_bubble_title)
+        if (bubbleRes != 0) {
+            return context.getString(bubbleRes)
         }
+
+        return modRes.getString(R.string.open_app_as_a_bubble)
     }
 
     private fun isBubbleShortcut(shortcut: Any?): Boolean {

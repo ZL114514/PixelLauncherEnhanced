@@ -70,7 +70,7 @@
             android:defaultValue="false"
             android:key="xposed_recentsappbubble"
             android:summary="@string/recents_app_bubble_summary"
-            android:title="@string/recents_app_bubble_title"
+            android:title="@string/open_app_as_a_bubble"
             app:iconSpaceReserved="false" />
 
         <com.drdisagree.pixellauncherenhanced.ui.preferences.SliderPreference
