@@ -36,6 +36,7 @@ class LockLayout(context: Context) : ModPack(context) {
         val launcherPopupItemDragHandlerClass = findClass(
             $$"com.android.launcher3.popup.PopupContainerWithArrow$LauncherPopupItemDragHandler",
             "com.android.launcher3.popup.LauncherPopupItemDragHandler",
+            suppressError = true,
         )
         val optionsPopupViewClass = findClass("com.android.launcher3.views.OptionsPopupView")
         val taskbarDragControllerClass = findClass(
