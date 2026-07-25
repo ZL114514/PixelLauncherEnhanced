@@ -9,6 +9,7 @@ import com.drdisagree.pixellauncherenhanced.data.common.Constants.FREEFORM_MODE
 import com.drdisagree.pixellauncherenhanced.xposed.ModPack
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.FreeformUtils
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.FreeformUtils.currentToFreeform
+import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.FreeformUtils.startAppBubble
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.FreeformUtils.startFreeformByIntent
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.FreeformUtils.startFreeformFromRecents
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.XposedHook.Companion.findClass
@@ -94,39 +95,42 @@ class FreeformMod(context: Context) : ModPack(context) {
                                             .callMethod("getTask")
                                     }
 
+                                val mSnapshotView =
+                                    if (Build.VERSION.SDK_INT > Build.VERSION_CODES.TIRAMISU) {
+                                        (param.thisObject
+                                            .getField("mRecentsView")
+                                            .callMethod("getRunningTaskView")
+                                            .callMethod("getTaskContainers"))
+                                            .callMethod("get", 0)
+                                            .callMethod("getSnapshotView")
+                                    } else {
+                                        param.thisObject
+                                            .getField("mRecentsView")
+                                            .callMethod("getRunningTaskView")
+                                            .callMethod("getThumbnail")
+                                    }
+
+                                val position = IntArray(2)
+                                mSnapshotView.callMethod("getLocationOnScreen", position)
+                                val w = mSnapshotView.callMethod("getWidth") as Int
+                                val h = mSnapshotView.callMethod("getHeight") as Int
+                                val mBound = Rect(
+                                    position[0],
+                                    position[1],
+                                    position[0] + w,
+                                    position[1] + h
+                                )
                                 when (freeformMode) {
                                     FreeformUtils.Variant.AOSP.id -> {
-                                        val mSnapshotView =
-                                            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.TIRAMISU) {
-                                                (param.thisObject
-                                                    .getField("mRecentsView")
-                                                    .callMethod("getRunningTaskView")
-                                                    .callMethod("getTaskContainers"))
-                                                    .callMethod("get", 0)
-                                                    .callMethod("getSnapshotView")
-                                            } else {
-                                                param.thisObject
-                                                    .getField("mRecentsView")
-                                                    .callMethod("getRunningTaskView")
-                                                    .callMethod("getThumbnail")
-                                            }
-
-                                        val position = IntArray(2)
-                                        mSnapshotView.callMethod("getLocationOnScreen", position)
-                                        val w = mSnapshotView.callMethod("getWidth") as Int
-                                        val h = mSnapshotView.callMethod("getHeight") as Int
-                                        val mBound = Rect(
-                                            position[0],
-                                            position[1],
-                                            position[0] + w,
-                                            position[1] + h
-                                        )
-
                                         startFreeformFromRecents(
                                             mTask,
                                             activityManagerWrapperClass.newInstance(),
                                             mBound
                                         )
+                                    }
+
+                                    FreeformUtils.Variant.BUBBLE.id -> {
+                                        startAppBubble(mContext, mTask)
                                     }
 
                                     FreeformUtils.Variant.YAMF.id,

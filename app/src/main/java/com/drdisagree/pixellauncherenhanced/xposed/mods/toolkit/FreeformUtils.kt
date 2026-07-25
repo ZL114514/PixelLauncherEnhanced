@@ -4,6 +4,9 @@ import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
 import android.graphics.Rect
+import android.os.UserHandle
+import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.XposedHook.Companion.findClass
+import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.log
 
 object FreeformUtils {
 
@@ -12,7 +15,8 @@ object FreeformUtils {
         SUNSHINE(1),
         LMAO(2),
         YAMF(3),
-        REYAMF(4);
+        REYAMF(4),
+        BUBBLE(5);
 
         companion object {
             fun fromId(id: Int): Variant = entries.find { it.id == id } ?: AOSP
@@ -94,6 +98,56 @@ object FreeformUtils {
         return when (mode) {
             Variant.REYAMF -> "com.mja.reyamf.action.CURRENT_TO_WINDOW"
             else -> "io.github.duzhaokun123.yamf.action.CURRENT_TO_WINDOW"
+        }
+    }
+
+    fun startAppBubble(mContext: Context, task: Any?) {
+        try {
+            val key = task.getFieldSilently("key")
+            val packageName = key.callMethod("getPackageName") as? String ?: return
+            val userId = key.getFieldSilently("userId") as? Int ?: return
+
+            // Get the top activity component for a precise intent target
+            val topComponent = task.callMethod("getTopComponent")
+            val className = topComponent?.callMethod("getClassName") as? String
+
+            val intent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                setPackage(packageName)
+                if (className != null) {
+                    component = android.content.ComponentName(packageName, className)
+                }
+            }
+            val userHandle = try {
+                UserHandle::class.java.getDeclaredConstructor(Int::class.java)
+                    .newInstance(userId)
+            } catch (_: Exception) {
+                UserHandle::class.java.getDeclaredConstructor(Int::class.javaPrimitiveType)
+                    .newInstance(userId)
+            }
+
+            // Get SystemUiProxy instance via Dagger singleton
+            val sysUiProxyClass = findClass("com.android.quickstep.SystemUiProxy")!!
+            val daggerSingleton = sysUiProxyClass.getStaticField("INSTANCE")
+            val systemUiProxy = daggerSingleton?.callMethod("get", mContext) ?: return
+
+            // Get EntryPoint.TASKBAR_ICON_MENU enum value
+            val entryPointClass = findClass(
+                "com.android.wm.shell.shared.bubbles.logging.EntryPoint"
+            ) ?: return
+            val entryPoint = entryPointClass.enumConstants!![0] // TASKBAR_ICON_MENU
+
+            // Avoid XposedHelpers method resolution entirely.
+            // Iterate SystemUiProxy methods, find showAppBubble with 4 params, invoke directly.
+            val method = systemUiProxy.javaClass.methods.firstOrNull { m ->
+                m.name == "showAppBubble" && m.parameterCount == 4
+            } ?: run {
+                log("FreeformUtils", "showAppBubble with 4 params not found")
+                return
+            }
+            method.invoke(systemUiProxy, intent, userHandle, entryPoint, null)
+        } catch (e: Exception) {
+            log("FreeformUtils", "Failed to show app bubble: ${e.message}")
         }
     }
 }
