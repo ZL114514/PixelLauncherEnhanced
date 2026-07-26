@@ -107,17 +107,28 @@ object FreeformUtils {
             val packageName = key.callMethod("getPackageName") as? String ?: return
             val userId = key.getFieldSilently("userId") as? Int ?: return
 
-            // Get the top activity component for a precise intent target
+            // Use the original baseIntent from the task as the foundation,
+            // so all original extras/data/categories are preserved.
+            val baseIntent = key.getFieldSilently("baseIntent") as? Intent
+            val intent = if (baseIntent != null) {
+                Intent(baseIntent)
+            } else {
+                Intent(Intent.ACTION_MAIN).apply { addCategory(Intent.CATEGORY_LAUNCHER) }
+            }
+            // Override component with the top activity for precise targeting.
+            // baseIntent may contain an alias (e.g. .DefaultIcon for TG);
+            // getTopComponent() resolves to the real activity.
             val topComponent = task.callMethod("getTopComponent")
             val className = topComponent?.callMethod("getClassName") as? String
-
-            val intent = Intent(Intent.ACTION_MAIN).apply {
-                addCategory(Intent.CATEGORY_LAUNCHER)
-                setPackage(packageName)
-                if (className != null) {
-                    component = android.content.ComponentName(packageName, className)
-                }
+            if (className != null) {
+                intent.component = android.content.ComponentName(packageName, className)
             }
+            // Always ensure package is set (BubbleData.getOrCreateBubble needs it)
+            intent.setPackage(packageName)
+
+            log("FreeformUtils", "Bubble intent: action=${intent.action} pkg=${intent.`package`} " +
+                    "component=${intent.component} extras=${intent.extras?.keySet()}")
+
             val userHandle = try {
                 UserHandle::class.java.getDeclaredConstructor(Int::class.java)
                     .newInstance(userId)
@@ -146,6 +157,7 @@ object FreeformUtils {
                 return
             }
             method.invoke(systemUiProxy, intent, userHandle, entryPoint, null)
+            log("FreeformUtils", "showAppBubble invoked OK")
         } catch (e: Exception) {
             log("FreeformUtils", "Failed to show app bubble: ${e.message}")
         }

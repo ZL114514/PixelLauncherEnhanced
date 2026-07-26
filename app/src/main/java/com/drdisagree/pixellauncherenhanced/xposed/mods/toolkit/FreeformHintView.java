@@ -252,6 +252,10 @@ public class FreeformHintView extends FrameLayout {
                 mDisplayText = null;
                 if (prev == HintPhase.SWIPE_UP_HINT) {
                     adjustProgressAnimation(1f, () -> {});
+                } else if (prev == HintPhase.HIDDEN) {
+                    // Shift jumped from HIDDEN to EXPAND; show + expand simultaneously
+                    adjustProgressAnimation(1f, () -> {});
+                    adjustVisibilityAnimation(true);
                 }
                 break;
         }
