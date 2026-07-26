@@ -3,12 +3,16 @@ package com.drdisagree.pixellauncherenhanced.xposed.mods
 import android.content.Context
 import android.graphics.Rect
 import android.os.Build
+import com.drdisagree.pixellauncherenhanced.BuildConfig
 import com.drdisagree.pixellauncherenhanced.data.common.Constants.FREEFORM_GESTURE
 import com.drdisagree.pixellauncherenhanced.data.common.Constants.FREEFORM_GESTURE_PROGRESS
 import com.drdisagree.pixellauncherenhanced.data.common.Constants.FREEFORM_MODE
 import com.drdisagree.pixellauncherenhanced.xposed.ModPack
+import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.FreeformHintView
+import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.FreeformHintViewController
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.FreeformUtils
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.FreeformUtils.currentToFreeform
+import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.FreeformUtils.startAppBubble
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.FreeformUtils.startFreeformByIntent
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.FreeformUtils.startFreeformFromRecents
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.XposedHook.Companion.findClass
@@ -17,6 +21,8 @@ import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.callMethod
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.getField
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.getStaticField
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.hookMethod
+import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.hookConstructor
+import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.log
 import com.drdisagree.pixellauncherenhanced.xposed.utils.XPrefs.Xprefs
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
 
@@ -25,6 +31,9 @@ class FreeformMod(context: Context) : ModPack(context) {
     private var freeformEnabled: Boolean = false
     private var offProgress: Float = 3f
     private var freeformMode: Int = 0
+
+    companion object {
+    }
 
     override fun updatePrefs(vararg key: String) {
         Xprefs.apply {
@@ -40,7 +49,26 @@ class FreeformMod(context: Context) : ModPack(context) {
         val gestureEndTargetClass = findClass("com.android.quickstep.GestureState.GestureEndTarget")
         val activityManagerWrapperClass =
             findClass("com.android.systemui.shared.system.ActivityManagerWrapper")
+        val dragLayerClass = findClass("com.android.launcher3.dragndrop.DragLayer")
 
+        // ── DragLayer lifecycle: init FreeformHintView ──
+        dragLayerClass?.hookConstructor()
+            ?.parameters(Context::class.java, android.util.AttributeSet::class.java)
+            ?.runAfter { param ->
+                if (!freeformEnabled) return@runAfter
+                try {
+                    FreeformHintViewController.init(
+                        param.thisObject as android.view.ViewGroup,
+                        param.args[0] as Context,
+                        appContext.resources,
+                        BuildConfig.APPLICATION_ID
+                    )
+                } catch (e: Exception) {
+                    log("FreeformMod", "FreeformHintView init error: ${e.message}")
+                }
+            }
+
+        // ── updateSysUiFlags: haptic + hint view phase ──
         absSwipeClass
             .hookMethod("updateSysUiFlags")
             .runAfter { param ->
@@ -50,11 +78,34 @@ class FreeformMod(context: Context) : ModPack(context) {
                     .getField("mCurrentShift")
                     .getField("value") as Float
 
+                // Haptic at trigger threshold
                 if (mProgress > offProgress) {
                     param.thisObject.callMethod("performHapticFeedback")
                 }
+
+                // Update FreeformHintView based on shift progress
+                updateHintView(param.thisObject, mProgress)
             }
 
+        // ── onCurrentShiftUpdated: hint view updates during gesture ──
+        absSwipeClass
+            .hookMethod("onCurrentShiftUpdated")
+            .runAfter { param ->
+                if (!freeformEnabled) return@runAfter
+                val mProgress = param.thisObject
+                    .getField("mCurrentShift")
+                    .getField("value") as Float
+                updateHintView(param.thisObject, mProgress)
+            }
+
+        // ── Gesture end (setEndTarget / onGestureEnd): reset hint view ──
+        absSwipeClass
+            .hookMethod("onGestureEnded")
+            .runAfter {
+                FreeformHintViewController.reset()
+            }
+
+        // ── initStateCallbacks: AOSP/3rd-party freeform trigger ──
         absSwipeClass
             .hookMethod("initStateCallbacks")
             .runAfter { param ->
@@ -77,7 +128,7 @@ class FreeformMod(context: Context) : ModPack(context) {
                             val mProgress = param.thisObject
                                 .getField("mCurrentShift")
                                 .getField("value") as Float
-                                                        
+
                             if (mProgress > offProgress) {
                                 val mTask =
                                     if (Build.VERSION.SDK_INT > Build.VERSION_CODES.TIRAMISU) {
@@ -94,39 +145,48 @@ class FreeformMod(context: Context) : ModPack(context) {
                                             .callMethod("getTask")
                                     }
 
+                                val mSnapshotView =
+                                    if (Build.VERSION.SDK_INT > Build.VERSION_CODES.TIRAMISU) {
+                                        (param.thisObject
+                                            .getField("mRecentsView")
+                                            .callMethod("getRunningTaskView")
+                                            .callMethod("getTaskContainers"))
+                                            .callMethod("get", 0)
+                                            .callMethod("getSnapshotView")
+                                    } else {
+                                        param.thisObject
+                                            .getField("mRecentsView")
+                                            .callMethod("getRunningTaskView")
+                                            .callMethod("getThumbnail")
+                                    }
+
+                                val position = IntArray(2)
+                                mSnapshotView.callMethod("getLocationOnScreen", position)
+                                val w = mSnapshotView.callMethod("getWidth") as Int
+                                val h = mSnapshotView.callMethod("getHeight") as Int
+                                val mBound = Rect(
+                                    position[0],
+                                    position[1],
+                                    position[0] + w,
+                                    position[1] + h
+                                )
+
                                 when (freeformMode) {
                                     FreeformUtils.Variant.AOSP.id -> {
-                                        val mSnapshotView =
-                                            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.TIRAMISU) {
-                                                (param.thisObject
-                                                    .getField("mRecentsView")
-                                                    .callMethod("getRunningTaskView")
-                                                    .callMethod("getTaskContainers"))
-                                                    .callMethod("get", 0)
-                                                    .callMethod("getSnapshotView")
-                                            } else {
-                                                param.thisObject
-                                                    .getField("mRecentsView")
-                                                    .callMethod("getRunningTaskView")
-                                                    .callMethod("getThumbnail")
-                                            }
-
-                                        val position = IntArray(2)
-                                        mSnapshotView.callMethod("getLocationOnScreen", position)
-                                        val w = mSnapshotView.callMethod("getWidth") as Int
-                                        val h = mSnapshotView.callMethod("getHeight") as Int
-                                        val mBound = Rect(
-                                            position[0],
-                                            position[1],
-                                            position[0] + w,
-                                            position[1] + h
-                                        )
-
                                         startFreeformFromRecents(
                                             mTask,
                                             activityManagerWrapperClass.newInstance(),
                                             mBound
                                         )
+                                    }
+
+                                    FreeformUtils.Variant.BUBBLE.id -> {
+                                        // Launch bubble immediately, with release shrink animation
+                                        startAppBubble(mContext, mTask)
+                                        val hintView = FreeformHintViewController.getHintView()
+                                        if (hintView != null) {
+                                            hintView.playReleaseAnimation(null)
+                                        }
                                     }
 
                                     FreeformUtils.Variant.YAMF.id,
@@ -153,5 +213,71 @@ class FreeformMod(context: Context) : ModPack(context) {
                         }
                     )
             }
+    }
+
+    // ── FreeformHintView helpers ──
+
+    private fun getDisplayRotation(handler: Any): Int {
+        return try {
+            val rv = handler.getField("mRecentsView")
+            val oriState = rv.callMethod("getPagedViewOrientedState")
+            oriState.callMethod("getDisplayRotation") as Int
+        } catch (e: Exception) {
+            android.view.Surface.ROTATION_0
+        }
+    }
+
+    private fun getRecentsView(handler: Any): Any? {
+        return try {
+            handler.getField("mRecentsView")
+        } catch (e: Exception) { null }
+    }
+
+    private fun getRunningTaskView(recentsView: Any): Any? {
+        return try {
+            recentsView.callMethod("getRunningTaskView")
+        } catch (e: Exception) { null }
+    }
+
+    /**
+     * Get the task thumbnail bounds relative to DragLayer (for freeform hint positioning).
+     * Always uses thumbnail bounds regardless of mode; bubble-specific animations
+     * are handled separately in the launch phase.
+     */
+    private fun getTaskBounds(handler: Any): Rect? {
+        val recentsView = getRecentsView(handler) ?: return null
+        val runningTaskView = getRunningTaskView(recentsView) ?: return null
+        return try {
+            val bounds = Rect()
+            runningTaskView.javaClass.getMethod(
+                "getThumbnailBounds", Rect::class.java, Boolean::class.javaPrimitiveType
+            ).invoke(runningTaskView, bounds, true)
+            bounds
+        } catch (e: Exception) { null }
+    }
+
+    private fun updateHintView(handler: Any, shift: Float) {
+        if (!freeformEnabled) return
+
+        // Hint starts at (trigger threshold - 0.5)
+        val hintStart = offProgress - 0.5f
+
+        val phase = when {
+            shift < hintStart -> FreeformHintView.HintPhase.HIDDEN
+            shift < offProgress -> FreeformHintView.HintPhase.SWIPE_UP_HINT
+            else -> FreeformHintView.HintPhase.EXPAND
+        }
+
+        val hintView = FreeformHintViewController.getHintView() ?: return
+
+        hintView.setDisplayRotation(getDisplayRotation(handler))
+        hintView.setPhase(phase)
+
+        if (phase == FreeformHintView.HintPhase.EXPAND) {
+            val bounds = getTaskBounds(handler)
+            if (bounds != null) {
+                hintView.setTaskBounds(bounds)
+            }
+        }
     }
 }

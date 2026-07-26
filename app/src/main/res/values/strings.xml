@@ -107,6 +107,7 @@
     <string name="freeform_gesture_progress_summary">Lower values trigger freeform earlier, higher values require swiping closer to the top</string>
     <string name="freeform_method_title">Select freeform method</string>
     <string name="freeform_method_summary">Change this if it doesn\'t work on your ROM</string>
+    <string name="freeform_gesture_swipe_up_hint">Swipe up to enter freeform</string>
     <string name="recents_clear_all">Clear all</string>
     <string name="homescreen_columns_title">Homescreen columns</string>
     <string name="homescreen_rows_title">Homescreen rows</string>
