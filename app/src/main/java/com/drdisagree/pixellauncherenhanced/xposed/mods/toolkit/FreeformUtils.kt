@@ -6,7 +6,6 @@ import android.content.Intent
 import android.graphics.Rect
 import android.os.UserHandle
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.XposedHook.Companion.findClass
-import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.log
 
 object FreeformUtils {
 
@@ -126,9 +125,6 @@ object FreeformUtils {
             // Always ensure package is set (BubbleData.getOrCreateBubble needs it)
             intent.setPackage(packageName)
 
-            log("FreeformUtils", "Bubble intent: action=${intent.action} pkg=${intent.`package`} " +
-                    "component=${intent.component} extras=${intent.extras?.keySet()}")
-
             val userHandle = try {
                 UserHandle::class.java.getDeclaredConstructor(Int::class.java)
                     .newInstance(userId)
@@ -139,7 +135,7 @@ object FreeformUtils {
 
             // Get SystemUiProxy instance via Dagger singleton
             val sysUiProxyClass = findClass("com.android.quickstep.SystemUiProxy")!!
-            val daggerSingleton = sysUiProxyClass.getStaticField("INSTANCE")
+            val daggerSingleton = sysUiProxyClass.getStaticFieldSilently("INSTANCE")
             val systemUiProxy = daggerSingleton?.callMethod("get", mContext) ?: return
 
             // Get EntryPoint.TASKBAR_ICON_MENU enum value
