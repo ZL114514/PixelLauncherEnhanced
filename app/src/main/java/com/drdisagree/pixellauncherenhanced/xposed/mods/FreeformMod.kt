@@ -32,6 +32,8 @@ class FreeformMod(context: Context) : ModPack(context) {
     private var freeformEnabled: Boolean = false
     private var offProgress: Float = 3f
     private var freeformMode: Int = 0
+    /** Blocks shift updates from the home-return animation (would re-show the hint). */
+    private var mGestureActive: Boolean = false
 
     override fun updatePrefs(vararg key: String) {
         Xprefs.apply {
@@ -53,7 +55,10 @@ class FreeformMod(context: Context) : ModPack(context) {
         dragLayerClass?.hookConstructor()
             ?.parameters(Context::class.java, android.util.AttributeSet::class.java)
             ?.runAfter { param ->
-                if (!freeformEnabled) return@runAfter
+                if (!freeformEnabled) {
+                    log("FreeformMod", "DragLayer constructed but freeform disabled — skipping hint init")
+                    return@runAfter
+                }
                 try {
                     FreeformHintViewController.init(
                         param.thisObject as android.view.ViewGroup,
@@ -74,12 +79,28 @@ class FreeformMod(context: Context) : ModPack(context) {
                 val mProgress = param.thisObject
                     .getField("mCurrentShift")
                     .getField("value") as Float
-                updateHintView(param.thisObject, mProgress, param)
+                // Mark gesture as active when shift exceeds the hint start threshold.
+                // shift < hintStart means the finger is below the hint zone; still mark
+                // active to keep the initial 0→hintStart range tracked. Only mGestureActive=false
+                // happens after onGestureEnded (home animation shift updates).
+                if (!mGestureActive && mProgress > 0f) {
+                    mGestureActive = true
+                }
+                if (mGestureActive) {
+                    updateHintView(param.thisObject, mProgress, param)
+                }
             }
 
-        // ── Gesture end (setEndTarget / onGestureEnd): reset hint view ──
+        // ── Gesture end: reset hint view AND block further shift updates ──
+        // Use runBefore to set mGestureActive=false BEFORE the original method runs,
+        // so even synchronous home animation (handleNormalGestureEnd →
+        // createWindowAnimationToHome → mCurrentShift.updateValue(startProgress)
+        // → onCurrentShiftUpdated) is blocked.
         absSwipeClass
             .hookMethod("onGestureEnded")
+            .runBefore {
+                mGestureActive = false
+            }
             .runAfter {
                 FreeformHintViewController.reset()
             }
@@ -238,16 +259,37 @@ class FreeformMod(context: Context) : ModPack(context) {
     private fun updateHintView(handler: Any, shift: Float, param:  XC_MethodHook.MethodHookParam) {
         if (!freeformEnabled) return
 
+        // self-heal: rebuild view if missing/detached (deep sleep, removeAllViews)
+        if (FreeformHintViewController.getHintView()?.isAttachedToWindow != true) {
+            FreeformHintViewController.ensureWithLauncher(
+                mContext, appContext.resources, BuildConfig.APPLICATION_ID
+            )
+        }
+        val hintView = FreeformHintViewController.getHintView() ?: return
+
         // Hint starts at (trigger threshold - 0.7)
         val hintStart = offProgress - 0.7f
 
-        val phase = when {
-            shift < hintStart -> FreeformHintView.HintPhase.HIDDEN
-            shift < offProgress -> FreeformHintView.HintPhase.SWIPE_UP_HINT
-            else -> FreeformHintView.HintPhase.EXPAND
-        }
+        // hysteresis: phase flips need to cross thresholds, prevents jitter restarts
+        val H = 0.15f
+        val prev = hintView.phase
+        val phase = when (prev) {
+            FreeformHintView.HintPhase.HIDDEN ->
+                if (shift >= hintStart) FreeformHintView.HintPhase.SWIPE_UP_HINT
+                else FreeformHintView.HintPhase.HIDDEN
 
-        val hintView = FreeformHintViewController.getHintView() ?: return
+            FreeformHintView.HintPhase.SWIPE_UP_HINT -> when {
+                shift >= offProgress -> FreeformHintView.HintPhase.EXPAND
+                shift < hintStart - H -> FreeformHintView.HintPhase.HIDDEN
+                else -> FreeformHintView.HintPhase.SWIPE_UP_HINT
+            }
+
+            FreeformHintView.HintPhase.EXPAND -> when {
+                shift < hintStart - H -> FreeformHintView.HintPhase.HIDDEN
+                shift < offProgress - H -> FreeformHintView.HintPhase.SWIPE_UP_HINT
+                else -> FreeformHintView.HintPhase.EXPAND
+            }
+        }
 
         // Haptic at trigger threshold
         if (phase != hintView.phase) {
@@ -257,11 +299,12 @@ class FreeformMod(context: Context) : ModPack(context) {
         hintView.setDisplayRotation(getDisplayRotation(handler))
         hintView.setPhase(phase)
 
-        if (phase == FreeformHintView.HintPhase.EXPAND) {
-            val bounds = getTaskBounds(handler)
-            if (bounds != null) {
-                hintView.setTaskBounds(bounds)
-            }
+        // Always update task bounds — the thumbnail's screen position changes with
+        // every shift update, and the hint card needs accurate bounds at all phases
+        // (pre-cached for smooth EXPAND, and for correct scale during SWIPE_UP_HINT).
+        val bounds = getTaskBounds(handler)
+        if (bounds != null) {
+            hintView.setTaskBounds(bounds)
         }
     }
 }

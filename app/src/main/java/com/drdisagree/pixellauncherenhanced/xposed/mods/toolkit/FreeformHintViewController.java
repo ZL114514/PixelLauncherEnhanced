@@ -3,12 +3,15 @@ package com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit;
 import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Rect;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.ViewGroup;
 
 import com.drdisagree.pixellauncherenhanced.xposed.mods.toolkit.FreeformHintView.HintPhase;
 
 public class FreeformHintViewController {
+
+    private static final String TAG = "FreeformController";
 
     private static FreeformHintView sHintView;
     private static ViewGroup sDragLayer;
@@ -21,7 +24,16 @@ public class FreeformHintViewController {
      */
     public static void init(ViewGroup dragLayer, Context context,
                              Resources moduleResources, String modulePackage) {
-        if (sHintView != null) return;
+        // reuse attached view; stale after Activity recreation (deep sleep) → rebuild
+        if (sHintView != null) {
+            if (sHintView.getParent() != null && sHintView.isAttachedToWindow()) {
+                Log.d(TAG, "init: reuse existing view, dragLayer=" + dragLayer);
+                return;
+            }
+            Log.w(TAG, "init: stale view (parent=" + sHintView.getParent()
+                    + " attached=" + sHintView.isAttachedToWindow() + ") — re-creating");
+            sHintView = null;
+        }
         sDragLayer = dragLayer;
 
         sHintView = new FreeformHintView(context, moduleResources, modulePackage);
@@ -33,23 +45,44 @@ public class FreeformHintViewController {
 
         dragLayer.addView(sHintView);
         sHintView.initLayout();
+        Log.d(TAG, "init: created hint view on " + dragLayer);
     }
 
     /**
-     * Ensures FreeformHintView exists and is attached to DragLayer.
-     * If DragLayer was cleared (e.g. removeAllViews during recents cleanup),
-     * re-creates the view. Safe to call on every gesture start.
+     * Ensure hint view is attached to the current DragLayer (self-heal after
+     * deep sleep / removeAllViews). Fetches live DragLayer via Launcher.
      */
-    public static void ensureFreeformHintView(ViewGroup dragLayer, Context context,
-                                               Resources moduleResources, String modulePackage) {
-        if (sHintView != null && sHintView.getParent() != null
-                && sHintView.isAttachedToWindow()) {
-            return; // already alive
+    public static void ensureWithLauncher(Context context,
+                                           Resources moduleResources, String modulePackage) {
+        ViewGroup dragLayer = findCurrentDragLayer(context);
+        if (dragLayer == null) {
+            Log.w(TAG, "ensureWithLauncher: no current DragLayer found");
+            return;
         }
-        // Stale reference: clear and re-init
+        if (sHintView != null && sHintView.getParent() == dragLayer
+                && sHintView.isAttachedToWindow()) {
+            return;
+        }
+        Log.w(TAG, "ensureWithLauncher: stale/missing view on current DragLayer — re-creating");
         sHintView = null;
         sDragLayer = null;
         init(dragLayer, context, moduleResources, modulePackage);
+    }
+
+    private static ViewGroup findCurrentDragLayer(Context context) {
+        try {
+            Class<?> launcherClass = Class.forName("com.android.launcher3.Launcher");
+            Object launcher = launcherClass.getMethod("getLauncher", Context.class)
+                    .invoke(null, context);
+            if (launcher == null) return null;
+            try {
+                return (ViewGroup) launcherClass.getMethod("getDragLayer").invoke(launcher);
+            } catch (Exception e1) {
+                return (ViewGroup) launcherClass.getField("mDragLayer").get(launcher);
+            }
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static ViewGroup.LayoutParams createLayoutParams(ViewGroup parent) {

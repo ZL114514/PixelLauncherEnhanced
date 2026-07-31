@@ -18,10 +18,13 @@ import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.os.SystemClock;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.OvershootInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
@@ -45,6 +48,8 @@ import static android.view.Surface.ROTATION_270;
  */
 public class FreeformHintView extends FrameLayout {
 
+    private static final String TAG = "FreeformHint";
+
     @Retention(RetentionPolicy.SOURCE)
     @IntDef({ROTATION_0, ROTATION_90, ROTATION_180, ROTATION_270})
     public @interface SurfaceRotation {}
@@ -54,7 +59,7 @@ public class FreeformHintView extends FrameLayout {
     private static final int CARD_HEIGHT_DP = 56, ICON_SIZE_DP = 24;
     private static final int ICON_PADDING_DP = 16, TEXT_SIZE_SP = 14;
     private static final int CARD_MARGIN_DP = 2, EXPAND_MARGIN_DP = 8;
-    private static final int ANIM_DURATION_MS = 250;
+    private static final int ANIM_DURATION_MS = 350;
 
     private final Paint mBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -75,10 +80,17 @@ public class FreeformHintView extends FrameLayout {
 
     private ValueAnimator mProgressAnimator;
     private AnimatorSet mVisibilityAnimator;
+    /** Target value of the running progress animation (for same-target no-op). */
+    private float mProgressTarget = 0f;
+    /** Completion callback of the running progress animation. */
+    private Runnable mProgressOnEnd;
     private final int[] mPosTmp = new int[2];
 
     /** Active release animation (shrink + fade), null when idle. */
     private AnimatorSet mReleaseAnimator;
+
+    /** Throttle for onDraw gate diagnostic log. */
+    private static long sLastDrawGateLog;
 
     private final ImageView mIconView;
 
@@ -91,7 +103,7 @@ public class FreeformHintView extends FrameLayout {
                             @Nullable Resources moduleRes,
                             @Nullable String modulePackageName) {
         super(context);
-        setLayerType(LAYER_TYPE_HARDWARE, null);
+        // no LAYER_TYPE_HARDWARE: stale hardware layer after deep sleep blocks rendering
         setWillNotDraw(false);
         float density = context.getResources().getDisplayMetrics().density;
 
@@ -220,61 +232,83 @@ public class FreeformHintView extends FrameLayout {
         return mPhase;
     }
 
+    /**
+     * Set phase with optional force flag (bypasses the same-phase early return).
+     */
     public void setPhase(@NonNull HintPhase phase) {
-        if (mPhase == phase) return;
+        setPhase(phase, false);
+    }
+
+    public void setPhase(@NonNull HintPhase phase, boolean force) {
+        if (mPhase == phase && !force && isStateConsistent(phase)) return;
+        if (mPhase == phase && !force) {
+            // same phase but state corrupted (alpha=0 while visible) — force re-run
+            Log.w(TAG, "setPhase: same-phase self-heal " + phase
+                    + " visible=" + mIsVisible + " alpha=" + mHintAlpha
+                    + " visAnim=" + (mVisibilityAnimator != null)
+                    + " progAnim=" + (mProgressAnimator != null)
+                    + " attached=" + isAttachedToWindow());
+        }
         HintPhase prev = mPhase;
         mPhase = phase;
+        Log.d(TAG, "setPhase: " + prev + " -> " + phase
+                + " force=" + force + " visible=" + mIsVisible
+                + " alpha=" + mHintAlpha + " attached=" + isAttachedToWindow());
 
-        // Cancel ALL running animations (visibility, progress, release)
-        // and restore View-level properties. The release animation sets
-        // View.setAlpha(0) + setScaleX/Y(0.5) which pollutes the View;
-        // reset them here. Internal transparency is controlled via
-        // mHintAlpha/mIconView/onDraw, so View alpha should always be 1.
-        cancelAnimators();
         animate().cancel();
         setAlpha(1f);
         setScaleX(mScale);
         setScaleY(mScale);
 
-        // Restore position before starting new animation. After a cancelled
-        // release animation the LayoutParams may be left at the collapsed-ball
-        // position; adjustVisibilityAnimation(true) only animates alpha+scale
-        // without calling updatePositionAndSize(), so the card would appear
-        // at the stale position. Force-reposition here for visible phases.
-        if (phase != HintPhase.HIDDEN) {
-            updatePositionAndSize();
+        if (phase == HintPhase.HIDDEN) {
+            cancelAnimators();
+            if (prev == HintPhase.EXPAND) {
+                adjustProgressAnimation(0f, () -> adjustVisibilityAnimation(false));
+            } else {
+                adjustVisibilityAnimation(false);
+            }
+            return;
         }
 
-        switch (phase) {
-            case HIDDEN:
-                if (prev == HintPhase.EXPAND) {
-                    adjustProgressAnimation(0f, () -> adjustVisibilityAnimation(false));
-                } else {
-                    adjustVisibilityAnimation(false);
-                }
-                break;
+        // keep an in-flight show animation running (fast swipes need it to finish)
+        cancelRelease();
+        updatePositionAndSize();
 
+        switch (phase) {
             case SWIPE_UP_HINT:
                 mDisplayText = mSwipeUpText;
                 if (prev == HintPhase.HIDDEN) {
                     adjustVisibilityAnimation(true);
                 } else if (prev == HintPhase.EXPAND) {
-                    adjustVisibilityAnimation(true);
                     adjustProgressAnimation(0f, null);
                 }
                 break;
 
             case EXPAND:
                 mDisplayText = null;
-                if (prev == HintPhase.SWIPE_UP_HINT) {
-                    adjustProgressAnimation(1f, () -> {});
-                } else if (prev == HintPhase.HIDDEN) {
-                    // Shift jumped from HIDDEN to EXPAND; show + expand simultaneously
-                    adjustProgressAnimation(1f, () -> {});
+                // show animation may have been cut off by a fast swipe — ensure visible
+                if (!mIsVisible && mVisibilityAnimator == null && mHintAlpha <= 0.01f) {
                     adjustVisibilityAnimation(true);
+                }
+                if (prev == HintPhase.SWIPE_UP_HINT || prev == HintPhase.HIDDEN) {
+                    adjustProgressAnimation(1f, () -> {});
                 }
                 break;
         }
+    }
+
+    /**
+     * Same-phase setPhase may skip only if state matches the phase intent.
+     */
+    private boolean isStateConsistent(HintPhase phase) {
+        if (phase == HintPhase.HIDDEN) {
+            // alpha off, or collapse/hide animation still finishing
+            return mHintAlpha <= 0.01f
+                    || mVisibilityAnimator != null
+                    || mProgressAnimator != null;
+        }
+        // visible intent: showing or animating toward visible
+        return mIsVisible || mVisibilityAnimator != null || mHintAlpha > 0.01f;
     }
 
     public void setDisplayRotation(@SurfaceRotation int rotation) {
@@ -292,9 +326,8 @@ public class FreeformHintView extends FrameLayout {
         }
         mTaskBounds.set(bounds);
         mHasTaskBounds = true;
-        if (mPhase == HintPhase.EXPAND) {
-            updatePositionAndSize();
-        }
+        // thumbnail position changes every frame — always reposition, not just in EXPAND
+        updatePositionAndSize();
     }
 
     public void initLayout() {
@@ -365,7 +398,7 @@ public class FreeformHintView extends FrameLayout {
         final boolean[] wasCancelled = new boolean[1];
         ValueAnimator fadeOut = ValueAnimator.ofFloat(1f, 0f);
         fadeOut.setDuration(150L);
-        fadeOut.setInterpolator(new FastOutSlowInInterpolator());
+        fadeOut.setInterpolator(new OvershootInterpolator());
         fadeOut.addUpdateListener(a -> {
             float p = a.getAnimatedFraction();
             setScaleX(1f - p * 0.7f);
@@ -380,7 +413,6 @@ public class FreeformHintView extends FrameLayout {
             @Override
             public void onAnimationEnd(Animator animation) {
                 if (!wasCancelled[0]) {
-                    mHintAlpha = 0f;
                     mIsVisible = false;
                     requestLayout();
                     if (onComplete != null) onComplete.run();
@@ -389,7 +421,7 @@ public class FreeformHintView extends FrameLayout {
         });
 
         AnimatorSet set = new AnimatorSet();
-        set.playTogether(collapse, fadeOut);
+        set.playTogether(fadeOut);
         set.addListener(new AnimatorListenerAdapter() {
             @Override
             public void onAnimationEnd(Animator animation) {
@@ -403,10 +435,19 @@ public class FreeformHintView extends FrameLayout {
     // ── Animations ──
 
     private void adjustProgressAnimation(float target, @Nullable Runnable onEnd) {
+        // reuse same-target animation (avoids threshold-flicker restarts), adopt new callback
+        if (mProgressAnimator != null && mProgressTarget == target) {
+            if (onEnd != null) mProgressOnEnd = onEnd;
+            return;
+        }
         if (mProgressAnimator != null) mProgressAnimator.cancel();
+        mProgressAnimator = null;
+        mProgressTarget = target;
+        mProgressOnEnd = onEnd;
 
+        final boolean[] wasCancelled = new boolean[1];
         mProgressAnimator = ValueAnimator.ofFloat(mExpandProgress, target);
-        mProgressAnimator.setInterpolator(new FastOutSlowInInterpolator());
+        mProgressAnimator.setInterpolator(new OvershootInterpolator(0.7f));
         mProgressAnimator.addUpdateListener(a -> {
             mExpandProgress = (float) a.getAnimatedValue();
             updatePositionAndSize();
@@ -414,8 +455,18 @@ public class FreeformHintView extends FrameLayout {
         });
         mProgressAnimator.addListener(new AnimatorListenerAdapter() {
             @Override
+            public void onAnimationCancel(Animator animation) {
+                wasCancelled[0] = true;
+            }
+            @Override
             public void onAnimationEnd(Animator animation) {
-                if (onEnd != null) onEnd.run();
+                // null on natural end too, else onMeasure 0x0 gate breaks
+                if (mProgressAnimator == animation) mProgressAnimator = null;
+                if (!wasCancelled[0] && mProgressOnEnd != null) {
+                    Runnable cb = mProgressOnEnd;
+                    mProgressOnEnd = null;
+                    cb.run();
+                }
             }
         });
 
@@ -445,11 +496,12 @@ public class FreeformHintView extends FrameLayout {
 
         AnimatorSet set = new AnimatorSet();
         set.playTogether(alpha, scale);
-        set.setInterpolator(new FastOutSlowInInterpolator());
+        set.setInterpolator(new OvershootInterpolator());
         set.setDuration(ANIM_DURATION_MS);
         set.addListener(new AnimatorListenerAdapter() {
             @Override
             public void onAnimationEnd(Animator animation) {
+                if (mVisibilityAnimator == animation) mVisibilityAnimator = null;
                 mIsVisible = visible;
                 // Only reset expand progress when hiding; during show transitions
                 // the progress animator may still be running to collapse from EXPAND
@@ -482,11 +534,16 @@ public class FreeformHintView extends FrameLayout {
         if (mProgressAnimator != null) {
             mProgressAnimator.cancel();
             mProgressAnimator = null;
+            mProgressOnEnd = null;
         }
         if (mVisibilityAnimator != null) {
             mVisibilityAnimator.cancel();
             mVisibilityAnimator = null;
         }
+        cancelRelease();
+    }
+
+    private void cancelRelease() {
         if (mReleaseAnimator != null) {
             mReleaseAnimator.cancel();
             mReleaseAnimator = null;
@@ -504,7 +561,9 @@ public class FreeformHintView extends FrameLayout {
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         if (!mIsVisible && mHintAlpha == 0f
-                && mVisibilityAnimator == null && mProgressAnimator == null) {
+                && mVisibilityAnimator == null
+                && mProgressAnimator == null
+                && mReleaseAnimator == null) {
             setMeasuredDimension(0, 0);
             return;
         }
@@ -614,7 +673,17 @@ public class FreeformHintView extends FrameLayout {
 
     @Override
     protected void onDraw(@NonNull Canvas canvas) {
-        if (mHintAlpha <= 0.01f || (mPhase == HintPhase.HIDDEN && !mIsVisible)) return;
+        if (mHintAlpha <= 0.01f || (mPhase == HintPhase.HIDDEN && !mIsVisible)) {
+            // diagnostic: visible phase but draw blocked = corrupted state (1/s throttle)
+            long now = SystemClock.uptimeMillis();
+            if (mPhase != HintPhase.HIDDEN && now - sLastDrawGateLog > 1000) {
+                sLastDrawGateLog = now;
+                Log.w(TAG, "onDraw gate blocked: phase=" + mPhase
+                        + " alpha=" + mHintAlpha + " visible=" + mIsVisible
+                        + " w=" + getWidth() + " h=" + getHeight());
+            }
+            return;
+        }
 
         int w = getWidth();
         int h = getHeight();
