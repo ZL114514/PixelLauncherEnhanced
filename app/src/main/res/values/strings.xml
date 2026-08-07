@@ -101,6 +101,8 @@
     <string name="fixed_button_width_title">Fixed width for each button</string>
     <string name="recents_remove_screenshot_title">Remove screenshot button</string>
     <string name="recents_remove_screenshot_summary">Hides the screenshot button in the recent apps overview</string>
+    <string name="open_app_as_a_bubble">Open app as a bubble</string>
+    <string name="recents_app_bubble_summary">Adds a Bubble action to the app popup above recent tasks when Launcher supports bubbles</string>
     <string name="freeform_gesture_title">Use gesture in recents to start freeform mode</string>
     <string name="freeform_gesture_summary">Swipe up from the app and release at the top of the recents screen to trigger freeform mode (requires freeform enabled in developer options)</string>
     <string name="freeform_gesture_progress_title">Freeform swipe threshold</string>
