@@ -66,6 +66,13 @@
             android:title="@string/recents_remove_screenshot_title"
             app:iconSpaceReserved="false" />
 
+        <com.drdisagree.pixellauncherenhanced.ui.preferences.SwitchPreference
+            android:defaultValue="false"
+            android:key="xposed_recentsappbubble"
+            android:summary="@string/recents_app_bubble_summary"
+            android:title="@string/open_app_as_a_bubble"
+            app:iconSpaceReserved="false" />
+
         <com.drdisagree.pixellauncherenhanced.ui.preferences.SliderPreference
             android:key="xposed_recentsbackgroundopacity"
             android:title="@string/recents_background_opacity_title"
